@@ -104,9 +104,17 @@ class Variant:
     def ks_name(self) -> str:
         return f"{self.name}.ks"
 
+    @property
+    def menu_label(self) -> str:
+        """Boot-menu text for this variant.  ONE place: the entry we add for a
+        `pull` variant and the entry bootc-image-builder generated for the
+        `offline` one must read identically, and "Install" is not repeated in
+        variants.conf."""
+        return f"Install {self.label} ({self.desktop})"
+
     def menu_entry(self, volid: str) -> str:
         return (
-            f"menuentry 'Install {self.label} ({self.desktop})' --class fedora --class gnu-linux "
+            f"menuentry '{self.menu_label}' --class fedora --class gnu-linux "
             f"--class gnu --class os {{\n"
             f"\tlinux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL={volid} "
             f"inst.ks=hd:LABEL={volid}:/{self.ks_name} quiet\n"
@@ -219,18 +227,30 @@ def extract(iso: Path, pairs: list[tuple[str, Path]]) -> None:
 
 
 def patch_grub(cfg: str, volid: str, offline: Variant, extras: list[Variant]) -> tuple[str, int]:
-    """Re-point BIB's entries at our offline kickstart and insert variant entries."""
+    """Re-point BIB's entries at our offline kickstart and insert variant entries.
+
+    The extra entries go AFTER bootc-image-builder's own install entry, not
+    before it, because GRUB defaults to the first entry: the `offline` variant
+    (the embedded payload, no network needed) has to win a bare Enter at the
+    menu.  For the same reason that first entry is re-labelled to the offline
+    variant, so the menu names all variants the same way.
+    """
     retargeted = cfg.count(f"inst.ks=hd:LABEL={volid}:/osbuild.ks")
     if retargeted == 0:
         die(f"{BIOS_CFG}/{EFI_CFG}: no 'inst.ks=hd:LABEL={volid}:/osbuild.ks' to re-point — unexpected BIB layout")
     cfg = cfg.replace(f"inst.ks=hd:LABEL={volid}:/osbuild.ks", f"inst.ks=hd:LABEL={volid}:/{offline.ks_name}")
 
     lines = cfg.splitlines(keepends=True)
-    first = next((i for i, line in enumerate(lines) if line.startswith("menuentry ")), None)
-    if first is None:
+    start = next((i for i, line in enumerate(lines) if line.startswith("menuentry ")), None)
+    if start is None:
         die("no menuentry in the GRUB config — unexpected layout")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].rstrip() == "}"), None)
+    if end is None:
+        die("the first menuentry in the GRUB config is not terminated — unexpected layout")
+
+    lines[start] = re.sub(r"^menuentry '[^']*'", f"menuentry '{offline.menu_label}'", lines[start])
     block = "".join(v.menu_entry(volid) + "\n" for v in extras)
-    patched = "".join(lines[:first]) + block + "".join(lines[first:])
+    patched = "".join(lines[:end + 1]) + "\n" + block + "".join(lines[end + 1:])
     return patched, retargeted
 
 

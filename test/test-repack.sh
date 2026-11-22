@@ -37,6 +37,15 @@ check "BIOS menu has the variant entries"   "grep -q 'hurunagus-silverblue.ks' '
 check "BIOS menu no longer uses BIB's ks"   "! grep -q '/osbuild.ks' '$work/wd/bios.cfg'"
 check "offline entry re-pointed"            "grep -q 'hurunagus-hyprland.ks' '$work/wd/bios.cfg'"
 check "test-media entry re-pointed"         "grep -c 'hurunagus-hyprland.ks' '$work/wd/bios.cfg' | grep -qx 4"
+# GRUB boots the first entry after its timeout, so that must be the offline
+# variant (no network), and every variant must be named the same way.
+check "offline variant keeps the default (first) entry" \
+    "awk '/^menuentry /{n++} n==1 && /inst.ks/{print; exit}' '$work/wd/bios.cfg' | grep -q 'hurunagus-hyprland.ks'"
+check "the first entry carries the offline variant's label" \
+    "grep -qm1 \"menuentry 'Install Hurunagus Hyprland (Hyprland + Omarchy — the flagship)'\" '$work/wd/bios.cfg'"
+check "no doubled Install label"            "! grep -q 'Install Install' '$work/wd/bios.cfg' '$work/wd/efi.cfg'"
+check "pull entries come after the offline entry" \
+    "awk '/^menuentry /{n++} /hurunagus-silverblue.ks/{print n; exit}' '$work/wd/bios.cfg' | grep -qx 2"
 
 # the copy inside the FAT image is what firmware reads
 MTOOLS_SKIP_CHECK=1 mcopy -i "$work/wd/efiboot.img" ::/EFI/BOOT/grub.cfg "$work/wd/fat.cfg"
