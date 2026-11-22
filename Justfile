@@ -24,6 +24,10 @@ build:
     ref="{{ offline_ref }}"
     [[ -n $ref ]] || { echo "variants.conf has no offline variant" >&2; exit 1; }
     echo "building anaconda-iso from $ref"
+    # bootc-image-builder no longer pulls the source image itself: it must be in
+    # rootful container storage first, or the build fails with
+    # "failed to inspect the image: image not known".
+    sudo podman pull "$ref"
     sudo podman run --rm --privileged --pull=newer --net=host \
         --security-opt label=type:unconfined_t \
         -v "$PWD/disk_config/iso.toml":/config.toml:ro \

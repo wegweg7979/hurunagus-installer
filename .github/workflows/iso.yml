@@ -98,6 +98,10 @@ jobs:
           [ -n "$ref" ] || { echo "variants.conf has no offline variant"; exit 1; }
           echo "building from $ref"
           mkdir -p output
+          # bootc-image-builder no longer pulls the source image itself — it must
+          # already be in rootful container storage or the build dies with
+          # "failed to inspect the image: image not known".
+          sudo podman pull "$ref"
           sudo podman run --rm --privileged --pull=newer --net=host \
             --security-opt label=type:unconfined_t \
             -v "$PWD/disk_config/iso.toml":/config.toml:ro \
