@@ -64,4 +64,8 @@ system with `bootc status` — it must name the variant you chose.
   rather than leaving the wrong distribution on the disk.
 * Booting this ISO installs; it does not rebase an existing system. To move a
   running box between variants, use [hurubase](https://github.com/wegweg7979/hurunagus-rebase).
+* The payload image must ship Fedora's repos in `/etc/yum.repos.d`. Fedora 45 puts
+  them in `/usr/share/dnf5/repos.d`, which bootc-image-builder does not read, so the
+  ISO build then cannot depsolve the Anaconda environment (`No match for argument:
+  coreutils`, no download attempt). Report it as an image bug, not an installer one.
 * This repo is the installer only — no image build, no COPR, nothing on a live system.
