@@ -1,0 +1,30 @@
+# bootc-image-builder config for the Hurunagus installer ISO.
+#
+# Build it FROM THE VARIANT MARKED `offline` in variants.conf.  The repack step
+# (tools/make-variant-iso.py) reads the image reference bootc-image-builder baked
+# into the ISO and refuses to run if it is not the `offline` variant — that check
+# is what stops an ISO built from one image from offering another as "offline".
+#
+# There is deliberately NO kickstart %post here.  The install logic lives in the
+# per-variant kickstarts the repack generates and writes to the ISO root
+# (<variant>.ks), and it re-points every boot entry at them; bootc-image-builder's
+# own /osbuild.ks is then unused.
+#
+# Modules: the Storage and Users modules are what make the install interactive
+# (disk, user); Network must stay ENABLED because a `pull` variant installs from
+# ghcr.io at install time.  The rest are off so the installer asks for nothing it
+# does not need.
+
+[customizations.installer.modules]
+enable = [
+  "org.fedoraproject.Anaconda.Modules.Storage",
+  "org.fedoraproject.Anaconda.Modules.Users",
+  "org.fedoraproject.Anaconda.Modules.Network",
+  "org.fedoraproject.Anaconda.Modules.Runtime",
+]
+disable = [
+  "org.fedoraproject.Anaconda.Modules.Security",
+  "org.fedoraproject.Anaconda.Modules.Services",
+  "org.fedoraproject.Anaconda.Modules.Subscription",
+  "org.fedoraproject.Anaconda.Modules.Timezone",
+]
