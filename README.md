@@ -68,4 +68,11 @@ system with `bootc status` — it must name the variant you chose.
   them in `/usr/share/dnf5/repos.d`, which bootc-image-builder does not read, so the
   ISO build then cannot depsolve the Anaconda environment (`No match for argument:
   coreutils`, no download attempt). Report it as an image bug, not an installer one.
+* Booting the ISO with virt-manager or Boxes: keep the file on **local disk**. QEMU
+  takes a "consistent read" lock on the image, and that lock fails through a
+  Flatpak document-portal path (`/run/user/1000/doc/…`) or any FUSE mount (an
+  rclone cloud mount, for instance) with `Failed to get "consistent read" lock:
+  Input/output error` — the VM dies before it starts, and nothing points at the
+  real cause. Copy the ISO off the cloud mount first, or mark the disk
+  `<shareable/>` in the libvirt XML to skip the lock entirely.
 * This repo is the installer only — no image build, no COPR, nothing on a live system.
