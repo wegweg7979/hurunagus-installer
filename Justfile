@@ -11,6 +11,7 @@
 export BIB_IMAGE := env_var_or_default("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest")
 image_name := "hurunagus-installer"
 iso := "output/iso/hurunagus-installer.iso"
+net_iso := "output/iso/hurunagus-installer-net.iso"
 anon_iso := "output/bootiso/install.iso"
 
 # the variant the ISO is built from: the one marked `offline` in variants.conf
@@ -55,6 +56,24 @@ variant-iso: build
     echo "Boot-test BOTH ways before shipping it:"
     echo "  just run-vm            (BIOS)"
     echo "  and an EFI/OVMF boot, then on the installed system: bootc status"
+
+# The network installer: the same ISO with the embedded payload deleted, so every
+# variant installs from the registry and the ISO drops from ~7 GiB to ~1.1 GiB.
+# That is the only one of the two that a GitHub release can host — the release
+# asset cap is 2 GiB per file, and a small payload image (fedora-bootc measures
+# ~1 GiB) plus the 1.12 GiB Anaconda environment would land at ~2.15 GiB.
+# Network is required at install time for every variant; nothing is embedded.
+net-iso: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p output/iso
+    podman run --rm -v "$PWD":/work -w /work registry.fedoraproject.org/fedora:45 \
+        bash -c 'dnf -y -q install xorriso mtools isomd5sum python3 >/dev/null &&
+                 python3 tools/make-variant-iso.py --variants variants.conf --strip-payload \
+                     --input '"{{ anon_iso }}"' --output '"{{ net_iso }}"''
+    ls -lh "{{ net_iso }}"
+    echo
+    echo "No payload: every menu entry installs from ghcr.io, so this ISO needs the network."
 
 test:
     test/test-repack.sh

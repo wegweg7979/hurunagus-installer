@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish-release:
+        description: "Publish the network ISO (~1.1 GiB) as a GitHub release asset — the full ISO is far over the 2 GiB per-file cap"
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -32,6 +37,7 @@ env:
   BIB_IMAGE: "quay.io/centos-bootc/bootc-image-builder:latest"
   ANON_ISO: "output/bootiso/install.iso"
   ISO: "output/iso/hurunagus-installer.iso"
+  ISO_NET: "output/iso/hurunagus-installer-net.iso"
 
 jobs:
   # The repack's own tests: fixture ISO in, assertive repack out.  Catches a
@@ -82,7 +88,7 @@ jobs:
     needs: [test, refs]
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write   # required to publish the network ISO as a release asset
       packages: read
       id-token: write
     steps:
@@ -146,6 +152,52 @@ jobs:
           retention-days: 0
           compression-level: 0
           overwrite: true
+      - name: Repack the network installer (payload deleted)
+        run: |
+          set -euo pipefail
+          podman run --rm -v "$PWD":/work -w /work registry.fedoraproject.org/fedora:45 \
+            bash -c "dnf -y -q install xorriso mtools isomd5sum python3 >/dev/null &&
+                     python3 tools/make-variant-iso.py --variants variants.conf --strip-payload \
+                        --input '$ANON_ISO' --output '$ISO_NET'"
+          ls -lh "$ISO_NET"
+          # GitHub caps a release asset at 2 GiB and this ISO exists to fit under
+          # that, so fail here rather than at upload time.
+          size=$(stat -c%s "$ISO_NET")
+          echo "network ISO: $size bytes ($(( size / 1048576 )) MiB)"
+          [ "$size" -lt 1610612736 ] || { echo "::error::network ISO exceeded 1.5 GiB"; exit 1; }
+      - name: Upload the network ISO
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hurunagus-installer-net-iso
+          path: output/iso/hurunagus-installer-net.iso
+          retention-days: 0
+          compression-level: 0
+          overwrite: true
+      - name: Publish the network ISO as a release asset
+        if: inputs.publish-release == true && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="installer-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}"
+          gh release create "$tag" \
+            --title "Hurunagus installer $tag" \
+            --notes "Network installer ISO — $(stat -c%s "$ISO_NET") bytes.
+
+          One ISO, every Hurunagus variant, chosen from the boot menu. It carries no
+          payload: each menu entry installs its image from ghcr.io with Anaconda's
+          \`bootc\` kickstart command, so **the network is required at install time**.
+          The ~7 GiB offline ISO (embedded flagship payload, installs with no network)
+          is built by the same workflow but is far over GitHub's 2 GiB per-file cap, so
+          it stays an artifact.
+
+          Entry order, and the kickstart each one runs, are generated from
+          \`variants.conf\`; boot-test both firmware paths before trusting an ISO." \
+            "$ISO_NET"
+          gh release view "$tag" --json url,tagName,assets \
+            --jq '"published \(.tagName) -> \(.url)\n" + (.assets[] | "  \(.name) \(.size) bytes")'
       - name: Upload to S3
         if: inputs.upload-to-s3 == true && github.event_name != 'pull_request'
         shell: bash

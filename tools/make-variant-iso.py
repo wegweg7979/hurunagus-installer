@@ -202,8 +202,16 @@ bootc --source-imgref=registry:{v.address} --target-imgref={v.address}
 """
 
 
-def kickstart(v: Variant) -> str:
-    return ks_offline(v) if v.mode == "offline" else ks_pull(v)
+def kickstart(v: Variant, strip_payload: bool) -> str:
+    """The kickstart for one variant.
+
+    With --strip-payload (the network ISO) even the variant marked `offline` is
+    installed from the registry: its job there is to be the DEFAULT entry, not to
+    supply the payload, because the payload is gone.
+    """
+    if strip_payload or v.mode != "offline":
+        return ks_pull(v)
+    return ks_offline(v)
 
 
 # ----------------------------------------------------------------------- iso
@@ -268,9 +276,15 @@ def edit_fat_image(img: Path, cfg_text: str, workdir: Path) -> None:
 
 
 def repack(iso_in: Path, iso_out: Path, volid: str, ks_files: dict[str, Path],
-           bios_cfg: Path, efi_cfg: Path, efi_img: Path) -> None:
+           bios_cfg: Path, efi_cfg: Path, efi_img: Path, strip_payload: bool = False) -> None:
     cmd = ["xorriso", "-indev", str(iso_in), "-outdev", str(iso_out),
            "-boot_image", "any", "replay", "-overwrite", "on"]
+    if strip_payload:
+        # The network ISO carries no payload: delete the container image BIB
+        # exported (5.8 GiB here) and BIB's own kickstarts, which would otherwise
+        # install that image bare from the ISO.  Every menu entry already points
+        # at a kickstart we wrote, so nothing references them.
+        cmd += ["-rm_r", "/container", "--", "-rm", "/osbuild.ks", "/osbuild-base.ks", "--"]
     for iso_path, src in ((BIOS_CFG, bios_cfg), (EFI_CFG, efi_cfg), (EFI_IMG, efi_img)):
         cmd += ["-update", str(src), iso_path]
     for name, src in ks_files.items():
@@ -281,7 +295,8 @@ def repack(iso_in: Path, iso_out: Path, volid: str, ks_files: dict[str, Path],
     run(cmd)
 
 
-def verify(iso_out: Path, volid: str, variants: list[Variant], workdir: Path, md5: bool) -> None:
+def verify(iso_out: Path, volid: str, variants: list[Variant], workdir: Path, md5: bool,
+           strip_payload: bool = False) -> None:
     out = text_of(run(["xorriso", "-indev", str(iso_out), "-report_el_torito", "plain"]))
     if f"Volume id    : '{volid}'" not in out:
         die(f"output ISO volume id changed (expected '{volid}')")
@@ -295,6 +310,24 @@ def verify(iso_out: Path, volid: str, variants: list[Variant], workdir: Path, md
 
     check = workdir / "verify"
     check.mkdir(parents=True, exist_ok=True)
+
+    if strip_payload:
+        # A network ISO must not carry the payload, and no kickstart on it may
+        # install from the payload: every one of them has to name the registry.
+        if "'container'" in listing:
+            die("the container payload is still on the network ISO — it should have been deleted")
+        if "'osbuild.ks'" in listing or "'osbuild-base.ks'" in listing:
+            die("BIB's own kickstarts are still on the network ISO (they install the payload)")
+        for v in variants:
+            ks_from_iso = check / (v.ks_name + ".fromiso")
+            extract(iso_out, [(f"/{v.ks_name}", ks_from_iso)])
+            body = ks_from_iso.read_text()
+            if "ostreecontainer" in body or "/run/install/repo/container" in body:
+                die(f"{v.ks_name} on the network ISO still installs the embedded payload")
+            if f"bootc --source-imgref=registry:{v.address}" not in body:
+                die(f"{v.ks_name} on the network ISO does not install from the registry")
+        note(f"network ISO: no payload on the ISO, all {len(variants)} entries install from the registry")
+
     extract(iso_out, [(BIOS_CFG, check / "bios.cfg"), (EFI_CFG, check / "efi.cfg"), (EFI_IMG, check / "efiboot.img")])
     for name, cfg in (("BIOS", check / "bios.cfg"), ("EFI (ISO9660)", check / "efi.cfg")):
         text = cfg.read_text()
@@ -332,6 +365,9 @@ def main() -> int:
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--workdir", type=Path, default=None, help="keep intermediates here instead of a temp dir")
     ap.add_argument("--no-md5", action="store_true", help="skip implantisomd5 (needed for 'Test this media')")
+    ap.add_argument("--strip-payload", action="store_true",
+                    help="build the NETWORK installer: delete the embedded payload and BIB's own "
+                         "kickstarts so every variant installs from the registry (~1.1 GiB instead of ~7)")
     ap.add_argument("--dry-run", action="store_true", help="print what would be written and stop")
     args = ap.parse_args()
 
@@ -346,7 +382,11 @@ def main() -> int:
 
     volid = iso_volid(args.input)
     note(f"input  {args.input} (volume id '{volid}')")
-    note(f"offline entry installs {offline.address} from the embedded payload")
+    if args.strip_payload:
+        note(f"NETWORK installer: payload deleted, all {len(variants)} variants install from the registry")
+        note(f"default entry: {offline.address} (the variant marked offline = the default here)")
+    else:
+        note(f"offline entry installs {offline.address} from the embedded payload")
     for v in extras:
         note(f"menu entry installs {v.address} from the registry")
 
@@ -368,7 +408,7 @@ def main() -> int:
 
     ks_files: dict[str, Path] = {}
     for v in variants:
-        text = kickstart(v)
+        text = kickstart(v, args.strip_payload)
         if args.dry_run:
             print(f"\n--- {v.ks_name} ---\n{text}")
         else:
@@ -389,7 +429,8 @@ def main() -> int:
 
     edit_fat_image(workdir / "efiboot.img", (workdir / "efi.cfg").read_text(), workdir)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    repack(args.input, args.output, volid, ks_files, workdir / "bios.cfg", workdir / "efi.cfg", workdir / "efiboot.img")
+    repack(args.input, args.output, volid, ks_files, workdir / "bios.cfg", workdir / "efi.cfg",
+           workdir / "efiboot.img", strip_payload=args.strip_payload)
 
     md5 = not args.no_md5
     if md5 and not have("implantisomd5"):
@@ -398,7 +439,7 @@ def main() -> int:
     if md5:
         run(["implantisomd5", str(args.output)])
 
-    verify(args.output, volid, variants, workdir, md5)
+    verify(args.output, volid, variants, workdir, md5, strip_payload=args.strip_payload)
     note(f"wrote {args.output} ({args.output.stat().st_size / 2**30:.2f} GiB)")
     note("boot-test it in a VM: BIOS and EFI, and check the installed system with `bootc status`")
     return 0

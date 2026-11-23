@@ -57,6 +57,27 @@ check "pull ks has no ostreecontainer"      "! grep -q ostreecontainer '$work/wd
 check "offline ks installs the payload"     "grep -q 'ostreecontainer --url=/run/install/repo/container --transport=oci' '$work/wd/hurunagus-hyprland.ks'"
 check "offline ks retries the switch"       "grep -q 'hurunagus-origin-fix.service' '$work/wd/hurunagus-hyprland.ks'"
 
+echo "== network ISO (--strip-payload) =="
+python3 tools/make-variant-iso.py --variants variants.conf --input "$work/fixture.iso" \
+    --output "$work/net.iso" --workdir "$work/netwd" --strip-payload --no-md5 >/dev/null
+xorriso -indev "$work/net.iso" -ls / >"$work/net-ls.txt" 2>&1 || true
+check "payload deleted from the network ISO"  "! grep -q \"'container'\" '$work/net-ls.txt'"
+check "BIB's own kickstarts deleted"          "! grep -qE \"'osbuild-base?.ks'\" '$work/net-ls.txt'"
+check "variant kickstarts still present"      "grep -q \"'hurunagus-ublue.ks'\" '$work/net-ls.txt'"
+check "offline variant still owns the default entry" \
+    "awk '/^menuentry /{n++} n==1 && /inst.ks/{print; exit}' '$work/netwd/bios.cfg' | grep -q 'hurunagus-hyprland.ks'"
+check "even the default variant now pulls from the registry" \
+    "grep -q 'bootc --source-imgref=registry:ghcr.io/wegweg7979/hurunagus-hyprland:latest' '$work/netwd/hurunagus-hyprland.ks'"
+check "no variant kickstart on the network ISO installs the payload" \
+    "! grep -l ostreecontainer '$work/netwd/hurunagus-hyprland.ks' '$work/netwd/hurunagus-silverblue.ks' '$work/netwd/hurunagus-ublue.ks'"
+check "network ISO still bootable (2 el torito images)" \
+    "xorriso -indev '$work/net.iso' -report_el_torito plain 2>&1 | grep -c 'El Torito boot img :' | grep -qx 2"
+# Sizes are printed, not asserted: on the fixture the payload is ~4 KB, so the
+# repack's own overhead dominates and the network ISO comes out slightly larger.
+# The real claim (5.81 GiB payload gone → ~1.1 GiB ISO) is gated in CI.
+printf '  info - sizes: input %s, full %s, network %s bytes\n' \
+    "$(stat -c%s "$work/fixture.iso")" "$(stat -c%s "$work/out.iso")" "$(stat -c%s "$work/net.iso")"
+
 echo "== refusals =="
 sed 's/^\(ghcr.io[^\t]*\)\t\(.*\)\toffline$/\1\t\2\tpull/' variants.conf >"$work/no-offline.conf"
 check "refuses a variants file with no offline entry" \
